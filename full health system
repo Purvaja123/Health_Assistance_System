@@ -1,0 +1,126 @@
+#include <Wire.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <ESP8266WiFi.h>
+#include <ThingSpeak.h>
+#include <LiquidCrystal_I2C.h>   // Add the I2C LCD library
+
+WiFiClient client;
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // Initialize the LCD object with the I2C address and dimensions
+
+const int sensorPin = A0;                               // A0 is the input pin for the heart rate sensor
+const int temperaturePin = D5;                          // D2 is the GPIO pin for the DS18B20 temperature sensor
+
+int sensorValue;                                        // Variable to store the value coming from the sensor
+int count = 0;
+unsigned long startTime = 0;
+unsigned long lastUpdateTime = 0;
+const unsigned long updateInterval = 8000;               // Update interval: 8 seconds
+const unsigned long resetInterval = 1800000;             // Reset interval: 30 minutes
+int heartRate = 0;
+boolean counted = false;
+long myChannelNumber = 2222954;              // Replace with your ThingSpeak channel number
+const char myWriteAPIKey[] = "5T93VCF8K61D8305";       // Replace with your ThingSpeak write API key
+
+OneWire oneWire(temperaturePin);
+DallasTemperature sensors(&oneWire);
+
+void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);                         // Built-in LED as status indicator
+  Serial.begin(9600);                                   // Start Serial Communication @ 9600 baud
+
+  WiFi.begin("OPPO A16", "Purvaja2005");   // Replace with your own network credentials
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(200);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.println("NodeMCU is connected!");
+  Serial.println(WiFi.localIP());
+
+  ThingSpeak.begin(client);
+  lastUpdateTime = millis();                            // Set the initial update time
+
+  sensors.begin();                                      // Initialize the DallasTemperature library
+
+  lcd.init();
+  lcd.clear();         
+  lcd.backlight();                            // Turn off the LCD backlight
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // Check if it's time to update the values
+  if (currentMillis - lastUpdateTime >= updateInterval) {
+    lastUpdateTime = currentMillis;
+
+    startTime = currentMillis;
+    while (currentMillis < startTime + 3000) {                     // Reading pulse sensor for 3 seconds
+      sensorValue = analogRead(sensorPin);
+      delay(10);
+
+      if ((sensorValue >= 590 && sensorValue <= 680) && !counted) {  // Threshold value is 590 (~2.7V)
+        count++;
+        digitalWrite(LED_BUILTIN, HIGH);
+        delay(10);
+        digitalWrite(LED_BUILTIN, LOW);
+        counted = true;
+      }
+      else if (sensorValue < 590) {
+        counted = false;
+        digitalWrite(LED_BUILTIN, LOW);
+      }
+
+      currentMillis = millis();                              // Update currentMillis
+    }
+
+    Serial.print("Pulse: ");
+    Serial.println(count);
+    heartRate = count * 3;                                    // Multiply the count by 3 to get beats per minute
+    Serial.print("BPM: ");
+    Serial.println(heartRate);                                // Display BPM in the Serial Monitor
+    count = 0;
+
+    sensors.requestTemperatures();
+    float temperatureC = sensors.getTempCByIndex(0);
+
+    Serial.print("Temperature: ");
+    Serial.println(temperatureC);
+
+    // Write the data to ThingSpeak
+    ThingSpeak.setField(1, heartRate);
+    ThingSpeak.setField(2, temperatureC);
+    int writeSuccess = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+    if (writeSuccess) {
+      Serial.println("Data sent successfully to ThingSpeak");
+    } else {
+      Serial.println("Error: Failed to send data to ThingSpeak");
+    }
+
+    // Display the values on the LCD
+    lcd.clear();
+    lcd.setCursor(2, 0);
+    lcd.print("BPM: ");
+    lcd.print(heartRate);
+
+    lcd.setCursor(2, 1);
+    lcd.print("Temp: ");
+    lcd.print(temperatureC);
+    lcd.print("C");
+
+    delay(5000);  // Display the values for 7 seconds
+
+    lcd.clear();  // Clear the LCD after displaying the values
+
+    delay(1000);  // Delay for 1 second before the next update
+  }
+
+  // Check if it's time to reset the values
+  if (currentMillis - lastUpdateTime >= resetInterval) {
+    lastUpdateTime = currentMillis;
+    count = 0;
+  }
+
+  delay(500);                                                // Delay between each loop iteration
+}
